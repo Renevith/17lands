@@ -105,6 +105,10 @@ def get_matches(file_name):
             won = split[won_index]
 
             if event_type == "TradDraft":
+                if int(game_number) > 3:
+                    print(f'WARN: more than 3 games in a match for {expansion} TradDraft {draft_id}')
+                    # this is a probably from a draw? but the data doesn't differentiate so not sure how to handle it
+                    continue
                 if int(game_number) <= prev_game_number:
                     # Either we recorded the match already last time through the loop,
                     #  or the match wasn't fully recorded by the 17lands client and we are okay discarding it.
@@ -167,6 +171,7 @@ def get_drafts(matches):
         if prev_draft["draft_id"] != match["draft_id"]:
             draft_complete = False
             if prev_draft["event_type"] == "PremierDraft":
+                # todo: handle draws. are they reported as won==False? need to subtract losses for events with too many?
                 if wins_this_draft == 7 or losses_this_draft == 3:
                     draft_complete = True
                 if wins_this_draft > 7:
