@@ -46,20 +46,31 @@ packs = {
     }
 }
 min_matches = {
-    "PremierDraft": 50,
-    "TradDraft": 10,
+    "PremierDraft": 0,
+    "TradDraft": 0,
 }
+rank_sort_order = [
+    "Mythic",
+    "Diamond",
+    "Platinum",
+    "Gold",
+    "Silver",
+    "Bronze",
+    "",
+]
 
 
 def main():
+    print_record_table()
+
+
+def print_draft_averages():
     matches = []
     for input_file_name in input_file_names:
-        print("collecting matches from " + input_file_name + "...")
         matches.extend(get_matches(input_file_name))
-    print("processing matches...")
-    drafts = get_drafts(matches)
-    buckets = get_buckets(drafts)
-    processed_buckets = process_buckets(buckets)
+    drafts = get_drafts(matches)[0]
+    buckets = get_draft_buckets(drafts)
+    processed_buckets = process_draft_buckets(buckets)
     for event_type in sorted(processed_buckets):
         print(event_type + " text data input:")
         print("win_rate_in_bucket,average_gems,average_packs,draft_count")
@@ -68,12 +79,64 @@ def main():
             print(f'{bucket["win_rate"]},{bucket["average_gems"]},{bucket["average_packs"]},{bucket["draft_count"]}')
 
 
+def print_rank_frequency():
+    matches = []
+    for input_file_name in input_file_names:
+        matches.extend(get_matches(input_file_name))
+    rank_frequencies = get_rank_frequencies(matches)
+    for rank in sorted(rank_frequencies, key=lambda val: rank_sort_order.index(val)):
+        for subrank in sorted(rank_frequencies[rank]):
+            print(f'{rank}-{subrank}: {str(rank_frequencies[rank][subrank])}')
+
+
+def print_rank_winrate():
+    matches = []
+    for input_file_name in input_file_names:
+        matches.extend(get_matches(input_file_name))
+    rank_buckets = process_rank_buckets(get_rank_buckets(matches))
+    for user_bucket in sorted(rank_buckets):
+        for rank in sorted(rank_buckets[user_bucket], key=lambda val: rank_sort_order.index(val)):
+            bucket = rank_buckets[user_bucket][rank]
+            print(f'{user_bucket}: {rank} = {round(bucket["win_rate"], 3)} win rate')
+
+
+def print_record_table():
+    matches = []
+    for input_file_name in input_file_names:
+        matches.extend(get_matches(input_file_name))
+    results_by_record = get_drafts(matches)[1]
+    for event_type in results_by_record:
+        print(event_type)
+        all_possible_wins = set()
+        for losses in results_by_record[event_type]:
+            all_possible_wins.update(results_by_record[event_type][losses].keys())
+        for possible_wins in sorted(all_possible_wins):
+            print(possible_wins, end=",")
+        print("")
+        for losses in results_by_record[event_type]:
+            print(losses, end=",")
+            for wins in results_by_record[event_type][losses]:
+                win_count = results_by_record[event_type][losses][wins]["win"]
+                loss_count = results_by_record[event_type][losses][wins]["loss"]
+                win_rate = win_count / (win_count + loss_count) if win_count + loss_count > 0 else -1
+                print(round(win_rate, 3), end=",")
+            print("")
+
+
+def get_rank_frequencies(matches):
+    match_counts = defaultdict(lambda: defaultdict(lambda: 0))
+    for match in matches:
+        match_counts[match["rank"]][match["subrank"]] += 1
+    return match_counts
+
+
 def get_matches(file_name):
     # strong assumptions about the order of data
     #  each draft must be contiguous lines in the input
     #   (this could be worked around if needed, using the draft identifier)
     #  each match within each draft must be contiguous, and in game order
     #   (no way to fix this -- there aren't any match identifiers)
+    print("collecting matches from " + file_name + "...")
     with open(file_name) as f:
         i = 0
         headers = f.readline().split(",")
@@ -159,12 +222,38 @@ def get_matches(file_name):
     return matches
 
 
+def get_rank_buckets(matches):
+    buckets = defaultdict(lambda: defaultdict(lambda: {
+        "match_count": 0,
+        "total_match_wins": 0,
+        "total_match_losses": 0,
+    }))
+    for match in matches:
+        bucket = buckets[match["user_win_rate_bucket"]][match["rank"]]
+        bucket["match_count"] += 1
+        if match["won"]:
+            bucket["total_match_wins"] += 1
+        else:
+            bucket["total_match_losses"] += 1
+    return buckets
+
+
+def process_rank_buckets(buckets):
+    for user_bucket in buckets:
+        for rank in buckets[user_bucket]:
+            bucket = buckets[user_bucket][rank]
+            bucket["win_rate"] = bucket["total_match_wins"] / (bucket["total_match_wins"] + bucket["total_match_losses"])
+    return buckets
+
+
 def get_drafts(matches):
     drafts = []
     prev_draft = {
         "draft_id": "abcd",
         "event_type": "abcd",
     }
+    draft_results = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: 0)))
+    results_by_record = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: 0))))
     wins_this_draft = 0
     losses_this_draft = 0
     for match in matches:
@@ -191,12 +280,22 @@ def get_drafts(matches):
                     draft_complete = False
             if draft_complete:
                 drafts.append(prev_draft)
+                for losses in draft_results:
+                    for wins in draft_results[losses]:
+                        for win_or_loss in draft_results[losses][wins]:
+                            result_count = draft_results[losses][wins][win_or_loss]
+                            if result_count > 1:
+                                raise Exception("More than one result for a given record in " + prev_draft["draft_id"])
+                            results_by_record[prev_draft["event_type"]][losses][wins][win_or_loss] += result_count
+            draft_results.clear()
             wins_this_draft = 0
             losses_this_draft = 0
 
         if match["won"]:
+            draft_results[losses_this_draft][wins_this_draft]["win"] += 1
             wins_this_draft += 1
         else:
+            draft_results[losses_this_draft][wins_this_draft]["loss"] += 1
             losses_this_draft += 1
 
         prev_draft = {
@@ -211,10 +310,10 @@ def get_drafts(matches):
             "losses": losses_this_draft,
         }
 
-    return drafts
+    return drafts, results_by_record
 
 
-def get_buckets(drafts):
+def get_draft_buckets(drafts):
     # no assumptions about the order of data within each bucket
     buckets = defaultdict(lambda: defaultdict(lambda: {
         "draft_count": 0,
@@ -233,7 +332,7 @@ def get_buckets(drafts):
     return buckets
 
 
-def process_buckets(buckets):
+def process_draft_buckets(buckets):
     processed_buckets = defaultdict(lambda: defaultdict(lambda: {}))
     for event_type in buckets:
         for bwr in buckets[event_type]:
