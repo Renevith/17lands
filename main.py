@@ -1,4 +1,6 @@
+import multiprocessing.dummy
 from collections import defaultdict
+from multiprocessing import Pool
 
 # Download whatever files you want to include in analysis and update the paths here:
 input_file_names = [
@@ -65,9 +67,7 @@ def main():
 
 
 def print_draft_averages():
-    matches = []
-    for input_file_name in input_file_names:
-        matches.extend(get_matches(input_file_name))
+    matches = get_all_matches(input_file_names)
     drafts = get_drafts(matches)[0]
     buckets = get_draft_buckets(drafts)
     processed_buckets = process_draft_buckets(buckets)
@@ -80,9 +80,7 @@ def print_draft_averages():
 
 
 def print_rank_frequency():
-    matches = []
-    for input_file_name in input_file_names:
-        matches.extend(get_matches(input_file_name))
+    matches = get_all_matches(input_file_names)
     rank_frequencies = get_rank_frequencies(matches)
     for rank in sorted(rank_frequencies, key=lambda val: rank_sort_order.index(val)):
         for subrank in sorted(rank_frequencies[rank]):
@@ -90,9 +88,7 @@ def print_rank_frequency():
 
 
 def print_rank_winrate():
-    matches = []
-    for input_file_name in input_file_names:
-        matches.extend(get_matches(input_file_name))
+    matches = get_all_matches(input_file_names)
     rank_buckets = process_rank_buckets(get_rank_buckets(matches))
     for user_bucket in sorted(rank_buckets):
         for rank in sorted(rank_buckets[user_bucket], key=lambda val: rank_sort_order.index(val)):
@@ -101,9 +97,7 @@ def print_rank_winrate():
 
 
 def print_record_table():
-    matches = []
-    for input_file_name in input_file_names:
-        matches.extend(get_matches(input_file_name))
+    matches = get_all_matches(input_file_names)
     results_by_record = get_drafts(matches)[1]
     for event_type in results_by_record:
         print(event_type)
@@ -128,6 +122,15 @@ def get_rank_frequencies(matches):
     for match in matches:
         match_counts[match["rank"]][match["subrank"]] += 1
     return match_counts
+
+
+def get_all_matches(file_names):
+    matches = []
+    print(f'{multiprocessing.cpu_count()} cores')
+    match_lists = Pool(multiprocessing.cpu_count()).map(get_matches, file_names)
+    for match_list in match_lists:
+        matches.extend(match_list)
+    return matches
 
 
 def get_matches(file_name):
@@ -218,7 +221,6 @@ def get_matches(file_name):
             if i > 20000000:
                 print("hit limit")
                 return matches
-    print("")
     return matches
 
 
@@ -261,6 +263,9 @@ def get_drafts(matches):
             draft_complete = False
             if prev_draft["event_type"] == "PremierDraft":
                 # todo: handle draws. are they reported as won==False? need to subtract losses for events with too many?
+                # it could be impossible to detect. example: WWLLL, but the last loss was a
+                #  draw and the user finished their draft without 17lands running...
+                #  example: eaf810446b7844d28906f3d83bd36416 (WWWLLLW)
                 if wins_this_draft == 7 or losses_this_draft == 3:
                     draft_complete = True
                 if wins_this_draft > 7:
@@ -281,7 +286,11 @@ def get_drafts(matches):
             if draft_complete:
                 drafts.append(prev_draft)
                 for losses in draft_results:
+                    if losses > 2:
+                        print(f'played after 3 losses for {prev_draft["expansion"]} {prev_draft["draft_id"]}')
                     for wins in draft_results[losses]:
+                        if wins > 7:
+                            print(f'played after 7 wins for {prev_draft["expansion"]} {prev_draft["draft_id"]}')
                         for win_or_loss in draft_results[losses][wins]:
                             result_count = draft_results[losses][wins][win_or_loss]
                             if result_count > 1:
