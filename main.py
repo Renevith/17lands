@@ -60,6 +60,8 @@ rank_sort_order = [
     "Bronze",
     "",
 ]
+min_win_rate_bucket = 0.55
+max_win_rate_bucket = 1
 
 
 def main():
@@ -98,22 +100,46 @@ def print_rank_winrate():
 
 def print_record_table():
     matches = get_all_matches(input_file_names)
-    results_by_record = get_drafts(matches)[1]
+    results_by_record, result_counts, unfinished_drafts = get_drafts(matches)[1:4]
     for event_type in results_by_record:
         print(event_type)
         all_possible_wins = set()
         for losses in results_by_record[event_type]:
             all_possible_wins.update(results_by_record[event_type][losses].keys())
-        for possible_wins in sorted(all_possible_wins):
-            print(possible_wins, end=",")
-        print("")
-        for losses in results_by_record[event_type]:
+        print("x," + ",".join(str(x) for x in sorted(all_possible_wins)))
+        for losses in sorted(results_by_record[event_type]):
             print(losses, end=",")
             for wins in results_by_record[event_type][losses]:
                 win_count = results_by_record[event_type][losses][wins]["win"]
                 loss_count = results_by_record[event_type][losses][wins]["loss"]
                 win_rate = win_count / (win_count + loss_count) if win_count + loss_count > 0 else -1
-                print(round(win_rate, 3), end=",")
+                print(round(win_rate, 8), end=",")
+            print("")
+
+        print("reported match count:")
+        all_possible_wins = set()
+        for losses in result_counts[event_type]:
+            all_possible_wins.update(result_counts[event_type][losses].keys())
+        print("x," + ",".join(str(x) for x in sorted(all_possible_wins)))
+        for losses in sorted(result_counts[event_type]):
+            if losses > 3:
+                continue
+            print(losses, end=",")
+            for wins in sorted(all_possible_wins):
+                print(result_counts[event_type][losses][wins], end=",")
+            print("")
+
+        print("unfinished draft count:")
+        all_possible_wins = set()
+        for losses in unfinished_drafts[event_type]:
+            all_possible_wins.update(unfinished_drafts[event_type][losses].keys())
+        print("x," + ",".join(str(x) for x in sorted(all_possible_wins)))
+        for losses in sorted(unfinished_drafts[event_type]):
+            if losses > 2:
+                continue
+            print(losses, end=",")
+            for wins in sorted(all_possible_wins):
+                print(unfinished_drafts[event_type][losses][wins], end=",")
             print("")
 
 
@@ -126,8 +152,7 @@ def get_rank_frequencies(matches):
 
 def get_all_matches(file_names):
     matches = []
-    print(f'{multiprocessing.cpu_count()} cores')
-    match_lists = Pool(multiprocessing.cpu_count()).map(get_matches, file_names)
+    match_lists = Pool(3).map(get_matches, file_names)
     for match_list in match_lists:
         matches.extend(match_list)
     return matches
@@ -163,6 +188,8 @@ def get_matches(file_name):
             if int(user_n_games_bucket) < min_matches[event_type]:
                 continue
             user_win_rate_bucket = split[user_win_rate_bucket_index]
+            if float(user_win_rate_bucket) >= max_win_rate_bucket or float(user_win_rate_bucket) <= min_win_rate_bucket:
+                continue
             draft_id = split[draft_id_index]
             expansion = split[expansion_index]
             game_number = split[game_number_index]
@@ -256,6 +283,8 @@ def get_drafts(matches):
     }
     draft_results = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: 0)))
     results_by_record = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: 0))))
+    result_count_by_record = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: 0)))
+    unfinished_drafts = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: 0)))
     wins_this_draft = 0
     losses_this_draft = 0
     for match in matches:
@@ -278,8 +307,11 @@ def get_drafts(matches):
                     print(f'WARN: 7 wins *and* 3 losses in {prev_draft["expansion"]} PremierDraft {prev_draft["draft_id"]}')
                     draft_complete = False
             if prev_draft["event_type"] == "TradDraft":
-                if wins_this_draft + losses_this_draft == 3 or (wins_this_draft == 0 and losses_this_draft == 2):
+                if wins_this_draft + losses_this_draft == 3:
                     draft_complete = True
+                if wins_this_draft == 0 and losses_this_draft == 2:
+                    draft_complete = True
+                    unfinished_drafts[prev_draft["event_type"]][losses_this_draft][wins_this_draft] += 1
                 if wins_this_draft + losses_this_draft > 3:
                     print(f'WARN: more than 3 matches played in {prev_draft["expansion"]} TradDraft {prev_draft["draft_id"]}')
                     draft_complete = False
@@ -296,9 +328,12 @@ def get_drafts(matches):
                             if result_count > 1:
                                 raise Exception("More than one result for a given record in " + prev_draft["draft_id"])
                             results_by_record[prev_draft["event_type"]][losses][wins][win_or_loss] += result_count
+            else:
+                unfinished_drafts[prev_draft["event_type"]][losses_this_draft][wins_this_draft] += 1
             draft_results.clear()
             wins_this_draft = 0
             losses_this_draft = 0
+            result_count_by_record[prev_draft["event_type"]][losses_this_draft][wins_this_draft] += 1
 
         if match["won"]:
             draft_results[losses_this_draft][wins_this_draft]["win"] += 1
@@ -306,6 +341,7 @@ def get_drafts(matches):
         else:
             draft_results[losses_this_draft][wins_this_draft]["loss"] += 1
             losses_this_draft += 1
+        result_count_by_record[prev_draft["event_type"]][losses_this_draft][wins_this_draft] += 1
 
         prev_draft = {
             "draft_id": match["draft_id"],
@@ -319,7 +355,7 @@ def get_drafts(matches):
             "losses": losses_this_draft,
         }
 
-    return drafts, results_by_record
+    return drafts, results_by_record, result_count_by_record, unfinished_drafts
 
 
 def get_draft_buckets(drafts):
